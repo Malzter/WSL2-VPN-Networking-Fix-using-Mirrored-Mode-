@@ -98,12 +98,3 @@ If you need to undo the changes made by this script:
 * If the error persists, ensure your Windows and WSL are fully up to date (`wsl --update` and check Windows Updates).
 * Confirm that no other software (especially VPNs, firewalls, or virtualization tools) is interfering with the WSL virtual network adapter. Temporarily disabling them one by one can help diagnose.
 * Consider performing a Windows network reset (`netcfg -d` in an elevated Command Prompt/PowerShell, followed by a restart) as a last resort (note this will reset all network adapters and configurations).
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details (You would need to add an MIT license file to the repo).
-```
-
-Remember to replace `"https://github.com/YourUsername/wsl-vpn-networking-fix.git"` with the actual URL of your repository once you create it. You'll also need to create an `LICENSE` file if you choose the MIT license.
-
-This README is comprehensive and should give users a clear understanding of the problem, the solution, and how to use your script effectively. Good luck with the repository!
