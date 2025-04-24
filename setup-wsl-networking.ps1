@@ -1,5 +1,10 @@
+# This script automates a temporary workaround for WSL2 networking issues with VPNs.
+# It configures mirrored networking mode and sets a static resolv.conf.
+# Remember to revert the resolv.conf changes manually when the VPN is disconnected.
+
 # Define the default DNS server to use in resolv.conf
-# You can change this to your preferred DNS server (e.g., your VPN's DNS, 1.1.1.1, 8.8.8.8)
+# IMPORTANT: Change this to the DNS server IP you get from 'ipconfig.exe /all'
+# while your VPN is connected. Using a public DNS like 8.8.8.8 might also work.
 $nameserver = "8.8.8.8" # Using Google DNS as a default example
 
 # --- Check for Administrator privileges ---
@@ -10,12 +15,14 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 Write-Host "Applying WSL2 networking fix using mirrored mode..." -ForegroundColor Green
+Write-Host "NOTE: This is a temporary fix. Remember to revert resolv.conf when VPN is disconnected." -ForegroundColor Yellow
 
 # --- Configure .wslconfig (Windows side) ---
 $wslConfigPath = Join-Path $env:USERPROFILE ".wslconfig"
 Write-Host "Configuring .wslconfig at $wslConfigPath" -ForegroundColor Yellow
 
 $wslConfigContent = if (Test-Path $wslConfigPath) { Get-Content $wslConfigPath -Encoding UTF8 } else { @() }
+# Remove existing networkingMode and [wsl2] section if it's just the header
 $newWslConfigContent = $wslConfigContent | Where-Object { $_ -notmatch "^\s*networkingMode\s*=" -and $_ -notmatch "^\s*\[wsl2\]\s*$" }
 
 # Add [wsl2] section if it doesn't exist
@@ -37,10 +44,12 @@ try {
 Write-Host "Configuring /etc/wsl.conf inside your default WSL distribution..." -ForegroundColor Yellow
 
 # Check if /etc/wsl.conf exists and read its content via wsl -e
-$wslConfCheck = wsl.exe -e stat /etc/wsl.conf 2>$null
-$wslConfExists = ($LASTEXITCODE -eq 0)
+# Using -e stat is more robust than Test-Path with wsl.exe
+$wslConfCheckResult = wsl.exe -e stat /etc/wsl.conf 2>&1 # Capture stderr
+$wslConfExists = ($LASTEXITCODE -eq 0 -and $wslConfCheckResult -notmatch "No such file or directory")
 
 $wslConfContent = if ($wslConfExists) { wsl.exe -e cat /etc/wsl.conf } else { @() }
+# Remove existing generateResolvConf and [network] section if it's just the header
 $newWslConfContent = $wslConfContent | Where-Object { $_ -notmatch "^\s*generateResolvConf\s*=" -and $_ -notmatch "^\s*\[network\]\s*$" }
 
 # Add [network] section if it doesn't exist
@@ -52,14 +61,15 @@ $newWslConfContent += "generateResolvConf=false"
 # Use a temporary file and sudo to write the content inside WSL
 $tempWslConfContent = $newWslConfContent | Out-String
 $tempFileName = "wslconf_temp_$([int](Get-Random * 10000)).conf"
+# Ensure temp file is in a location accessible by wsl.exe
 $tempFilePathWindows = Join-Path $env:TEMP $tempFileName
+$wslTempDir = "/mnt/c/Users/$($env:USERNAME)/AppData/Local/Temp" # Common temp path in WSL
 
 try {
     $tempWslConfContent | Set-Content $tempFilePathWindows -Encoding UTF8
-    # Copy temp file to WSL and overwrite /etc/wsl.conf using sudo
-    wsl.exe -- "$([System.IO.Path]::GetTempPath())" -c "sudo cp '$tempFileName' /etc/wsl.conf"
-    # Clean up temp file in WSL temp dir
-    wsl.exe -- "$([System.IO.Path]::GetTempPath())" -c "rm '$tempFileName'"
+
+    # Use wsl.exe to copy the temp file from Windows temp to WSL temp, then use sudo to move it
+    wsl.exe --cd "$wslTempDir" -e bash -c "sudo cp '$tempFileName' /etc/wsl.conf"
 
     Write-Host "/etc/wsl.conf configured successfully." -ForegroundColor Green
 
@@ -70,6 +80,8 @@ try {
 } finally {
      # Clean up temp file on Windows side
      if (Test-Path $tempFilePathWindows) { Remove-Item $tempFilePathWindows -Force }
+     # Clean up temp file in WSL temp dir (requires sudo if created by sudo cp)
+     wsl.exe --cd "$wslTempDir" -e bash -c "sudo rm -f '$tempFileName'" # Use -f just in case
 }
 
 
@@ -95,20 +107,32 @@ try {
     Write-Host "Removed old /etc/resolv.conf." -ForegroundColor Green
 
     # Create the new static resolv.conf with the specified nameserver
+    # Use a temp file and sudo tee to ensure correct permissions and content
     $resolvContent = "nameserver $($nameserver)`n" # Add newline
-    wsl.exe -e sudo bash -c "echo '$resolvContent' > /etc/resolv.conf"
+    $tempResolvFileName = "resolv_temp_$([int](Get-Random * 10000)).conf"
+    $tempResolvFilePathWindows = Join-Path $env:TEMP $tempResolvFileName
+
+    $resolvContent | Set-Content $tempResolvFilePathWindows -Encoding UTF8
+
+    # Copy temp file to WSL temp dir and use sudo tee to write to /etc/resolv.conf
+    wsl.exe --cd "$wslTempDir" -e bash -c "sudo tee /etc/resolv.conf < '$tempResolvFileName'"
+
     Write-Host "Created new /etc/resolv.conf with nameserver: $nameserver" -ForegroundColor Green
 
-    # Make resolv.conf immutable
-    wsl.exe -e sudo chattr +i /etc/resolv.conf
-    Write-Host "Made /etc/resolv.conf immutable." -ForegroundColor Green
+    # Removed the chattr +i step as this is a temporary fix
 
 } catch {
     Write-Host "Error configuring /etc/resolv.conf inside WSL: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Please ensure your default WSL distribution is running and you can use sudo without issues." -ForegroundColor Red
     exit 1
+} finally {
+     # Clean up temp resolv file on Windows side
+     if (Test-Path $tempResolvFilePathWindows) { Remove-Item $tempResolvFilePathWindows -Force }
+     # Clean up temp resolv file in WSL temp dir (requires sudo if created by sudo cp/tee)
+     wsl.exe --cd "$wslTempDir" -e bash -c "sudo rm -f '$tempResolvFileName'" # Use -f just in case
 }
 
 Write-Host "`nWSL networking fix applied successfully!" -ForegroundColor Green
 Write-Host "You should now have internet connectivity in your Ubuntu instance even with VPN enabled." -ForegroundColor Green
-Write-Host "Remember to run 'sudo chattr -i /etc/resolv.conf' if you ever need to edit resolv.conf again." -ForegroundColor Yellow
+Write-Host "Remember to manually revert resolv.conf when you disconnect your VPN." -ForegroundColor Yellow
+Write-Host "See the README for instructions on reverting." -ForegroundColor Yellow
